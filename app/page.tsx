@@ -8,7 +8,7 @@ import {
   Drawer, List, ListItem, ListItemButton, ListItemIcon, ListItemText, Alert,
   Table, TableBody, TableCell, TableContainer, TableHead, TableRow, Tooltip, Fade, InputAdornment,
   Select, MenuItem, FormControl, InputLabel, Stack, Link,
-  Accordion, AccordionSummary, AccordionDetails
+  Accordion, AccordionSummary, AccordionDetails, Avatar, Chip, Tabs, Tab, Snackbar
 } from '@mui/material'
 import { Grid } from '@mui/material'
 import {
@@ -17,7 +17,9 @@ import {
   Edit as EditIcon, Menu as MenuIcon, Notifications as NotificationsIcon, Cake as CakeIcon,
   Search as SearchIcon, ArrowUpward as ArrowUpwardIcon, ArrowDownward as ArrowDownwardIcon,
   Logout as LogoutIcon, UploadFile as UploadFileIcon, Description as DescriptionIcon,
-  ExpandMore as ExpandMoreIcon
+  ExpandMore as ExpandMoreIcon, AccountBox as AccountBoxIcon, Download as DownloadIcon, Share as ShareIcon,
+  Analytics as AnalyticsIcon, Notes as NotesIcon, Star as StarIcon, Email as EmailIcon, Phone as PhoneIcon,
+  Visibility as VisibilityIcon
 } from '@mui/icons-material'
 import {
     BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, Legend, ResponsiveContainer,
@@ -28,6 +30,8 @@ import relativeTime from 'dayjs/plugin/relativeTime'
 import { AdapterDayjs } from '@mui/x-date-pickers/AdapterDayjs'
 import { LocalizationProvider } from '@mui/x-date-pickers/LocalizationProvider'
 import { DatePicker } from '@mui/x-date-pickers/DatePicker'
+import jsPDF from 'jspdf'
+import html2canvas from 'html2canvas'
 
 dayjs.extend(relativeTime)
 
@@ -38,17 +42,18 @@ export const supabase = createClient(supabaseUrl, supabaseAnonKey)
 // --- TYPE DEFINITIONS ---
 interface BaseEntity { id: string; created_at: string; }
 export interface Client extends BaseEntity { first_name: string; last_name: string; email_id: string; mobile_no: string; dob: string; nationality: string; }
-export interface Booking extends BaseEntity { client_id: string; reference: string; vendor: string; destination: string; check_in: string; check_out: string; confirmation_no: string; seat_reference: string; meal_preference: string; special_requirement: string; booking_type: string; pnr: string; departure_date?: string; }
+export interface Booking extends BaseEntity { client_id: string; reference: string; vendor: string; destination: string; check_in: string; check_out: string; confirmation_no: string; seat_reference: string; meal_preference: string; special_requirement: string; booking_type: string; pnr: string; departure_date?: string; amount?: number; status?: 'Confirmed' | 'Pending' | 'Cancelled'; }
 export interface Visa extends BaseEntity { client_id: string; country: string; visa_type: string; visa_number: string; issue_date: string; expiry_date: string; notes: string; }
 export interface Passport extends BaseEntity { client_id: string; passport_number: string; issue_date: string; expiry_date: string; }
 export interface Policy extends BaseEntity { client_id: string; booking_id: string; policy_number: string; insurer: string; sum_insured: number; start_date: string; end_date: string; premium_amount: number; }
 export interface Reminder { type: string; id: string; name: string; days_left?: number; client_id?: string; [key: string]: any; }
 interface ClientDocument extends BaseEntity { client_id: string; file_name: string; file_path: string; }
+interface ClientNote extends BaseEntity { client_id: string; note: string; user: string; }
 
 
 const drawerWidth = 240;
 const rightDrawerWidth = 320;
-const COLORS = ['#0088FE', '#00C49F', '#FFBB28', '#FF8042', '#AF19FF'];
+const COLORS = ['#0088FE', '#00C49F', '#FFBB28', '#FF8042', '#AF19FF', '#FF6666', '#66B2FF']; // Expanded colors for more distinct charts
 
 // --- AUTHENTICATION COMPONENT ---
 const AuthComponent = ({ setSession }: { setSession: (session: Session | null) => void }) => {
@@ -139,6 +144,7 @@ export default function DashboardPage() {
   const [visas, setVisas] = useState<Visa[]>([])
   const [passports, setPassports] = useState<Passport[]>([])
   const [policies, setPolicies] = useState<Policy[]>([])
+  const [clientNotes, setClientNotes] = useState<ClientNote[]>([])
   
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -163,6 +169,8 @@ export default function DashboardPage() {
   // Document Upload Modal State
   const [docModalOpen, setDocModalOpen] = useState(false);
   const [selectedClientForDocs, setSelectedClientForDocs] = useState<Client | null>(null);
+  
+  const [snackbar, setSnackbar] = useState<{open: boolean, message: string}>({open: false, message: ''});
 
   // --- AUTHENTICATION ---
   useEffect(() => {
@@ -200,13 +208,14 @@ export default function DashboardPage() {
     setError(null)
     try {
       const [
-        clientsRes, bookingsRes, visasRes, passportsRes, policiesRes
+        clientsRes, bookingsRes, visasRes, passportsRes, policiesRes, notesRes
       ] = await Promise.all([
         supabase.from('clients').select('*'),
         supabase.from('bookings').select('*'),
         supabase.from('visas').select('*'),
         supabase.from('passports').select('*'),
         supabase.from('policies').select('*'),
+        supabase.from('client_notes').select('*'),
       ]);
 
       if (clientsRes.error) throw new Error(`Clients: ${clientsRes.error.message}`);
@@ -214,12 +223,14 @@ export default function DashboardPage() {
       if (visasRes.error) throw new Error(`Visas: ${visasRes.error.message}`);
       if (passportsRes.error) throw new Error(`Passports: ${passportsRes.error.message}`);
       if (policiesRes.error) throw new Error(`Policies: ${policiesRes.error.message}`);
+      if (notesRes.error) throw new Error(`Client Notes: ${notesRes.error.message}`);
 
       setClients((clientsRes.data as Client[]) || []);
       setBookings((bookingsRes.data as Booking[]) || []);
       setVisas((visasRes.data as Visa[]) || []);
       setPassports((passportsRes.data as Passport[]) || []);
       setPolicies((policiesRes.data as Policy[]) || []);
+      setClientNotes((notesRes.data as ClientNote[]) || []);
 
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'An unknown error occurred');
@@ -244,7 +255,7 @@ export default function DashboardPage() {
         let birthdayThisYear = dob.year(today.year());
         if (birthdayThisYear.isBefore(today, 'day')) birthdayThisYear = birthdayThisYear.add(1, 'year');
         const daysLeft = birthdayThisYear.diff(today, 'day');
-        if (daysLeft >= 0 && daysLeft <= 365) {
+        if (daysLeft >= 0 && daysLeft <= 7) {
             allReminders.push({ type: 'Birthday', id: client.id, name: `${client.first_name} ${client.last_name}`, dob: client.dob, days_left: daysLeft, client_id: client.id });
         }
     });
@@ -263,8 +274,8 @@ export default function DashboardPage() {
         });
     };
     checkExpiry(passports, 'Passport', 365);
-    checkExpiry(visas, 'Visa', 365);
-    checkExpiry(policies, 'Policy', 365);
+    checkExpiry(visas, 'Visa', 180 );
+    checkExpiry(policies, 'Policy', 180);
 
     bookings.forEach(booking => {
         const departureDate = dayjs(booking.departure_date);
@@ -283,16 +294,21 @@ export default function DashboardPage() {
     const tableName = activeView.toLowerCase();
     const { error } = await supabase.from(tableName).insert([itemData]);
     if (error) setError(`Error adding item: ${error.message}`);
-    else { fetchData(); handleCloseModal(); }
+    else { fetchData(); handleCloseModal(); setSnackbar({open: true, message: `${activeView.slice(0, -1)} added successfully!`}); }
   };
 
   const handleUpdateItem = async (itemData: unknown) => {
-    const tableName = activeView.toLowerCase();
+    let tableName = activeView.toLowerCase();
+    // Special handling for Client Insight's edit button, as it passes 'Clients' view
+    if (activeView === 'Client Insight') {
+        tableName = 'clients';
+    }
+
     if (typeof itemData === 'object' && itemData !== null && 'id' in itemData) {
       const { id, ...updateData } = itemData as {id: string};
       const { error } = await supabase.from(tableName).update(updateData).eq('id', id);
       if (error) setError(`Error updating item: ${error.message}`);
-      else { fetchData(); handleCloseModal(); }
+      else { fetchData(); handleCloseModal(); setSnackbar({open: true, message: `${tableName.slice(0, -1)} updated successfully!`}); }
     }
   };
 
@@ -306,21 +322,27 @@ export default function DashboardPage() {
     const tableName = itemToDelete.view.toLowerCase();
     const { error } = await supabase.from(tableName).delete().eq('id', itemToDelete.id);
     if (error) setError(`Error deleting item: ${error.message}`);
-    else fetchData();
+    else { fetchData(); setSnackbar({open: true, message: `${itemToDelete.view.slice(0, -1)} deleted successfully!`}); }
     setConfirmOpen(false);
     setItemToDelete(null);
   };
 
   // --- MODAL & DRAWER HANDLERS ---
   const handleDrawerToggle = () => setMobileOpen(!mobileOpen);
-  const handleOpenModal = (mode: 'add' | 'edit', item: unknown = null) => {
+  const handleOpenModal = (mode: 'add' | 'edit', item: unknown = null, overrideView: string | null = null) => {
     setModalMode(mode);
     setSelectedItem(item as any);
+    // If an overrideView is provided (e.g., from Client Insight to edit a client)
+    if (overrideView) {
+        setActiveView(overrideView);
+    }
     setOpenModal(true);
   };
   const handleCloseModal = () => {
     setOpenModal(false);
     setSelectedItem(null);
+    // Potentially reset activeView if it was overridden for the modal, or keep it as is
+    // For now, keep it as is, as the user might want to remain in Client Insight.
   };
   const handleOpenDocModal = (client: Client) => {
     setSelectedClientForDocs(client);
@@ -336,7 +358,7 @@ export default function DashboardPage() {
         if (reminder.client_id) {
             const client = clients.find(c => c.id === reminder.client_id);
             if (client) {
-                setActiveView('Clients');
+                setActiveView('Clients'); // Switch to clients view when editing a client from reminder
                 handleOpenModal('edit', client);
             }
         }
@@ -347,8 +369,8 @@ export default function DashboardPage() {
   // --- UI CONFIGURATION & FILTERING ---
   const getFieldsForView = (view: string) => {
     switch (view) {
-        case 'Clients': return { first_name: '', last_name: '', email_id: '', mobile_no: '', dob: '', nationality: '' };
-        case 'Bookings': return { client_id: '', pnr: '', booking_type: '', destination: '', check_in: '', check_out: '', vendor: '', reference: '', confirmation_no: '', seat_reference: '', meal_preference: '', special_requirement: '' };
+        case 'Clients': return { first_name: '', last_name: '', email_id: '', mobile_no: '', dob: '', nationality: '', vip_status: false };
+        case 'Bookings': return { client_id: '', pnr: '', booking_type: '', destination: '', check_in: '', check_out: '', vendor: '', reference: '', confirmation_no: '', seat_preference: '', meal_preference: '', special_requirement: '', departure_date: '', amount: 0, status: 'Confirmed' };
         case 'Visas': return { client_id: '', country: '', visa_type: '', visa_number: '', issue_date: '', expiry_date: '', notes: '' };
         case 'Passports': return { client_id: '', passport_number: '', issue_date: '', expiry_date: ''};
         case 'Policies': return { client_id: '', booking_id: '', policy_number: '', insurer: '', sum_insured: 0, start_date: '', end_date: '', premium_amount: 0 };
@@ -394,6 +416,7 @@ export default function DashboardPage() {
 
   const menuItems = [
     { text: 'Dashboard', icon: <DashboardIcon />, view: 'Dashboard' },
+    { text: 'Client Insight', icon: <AccountBoxIcon />, view: 'Client Insight' },
     { text: 'Clients', icon: <PeopleIcon />, view: 'Clients' },
     { text: 'Bookings', icon: <FlightIcon />, view: 'Bookings' },
     { text: 'Visas', icon: <VpnKeyIcon />, view: 'Visas'},
@@ -431,7 +454,8 @@ export default function DashboardPage() {
     if (error) return <Grid item xs={12}><Alert severity="error">{error}</Alert></Grid>;
 
     switch (activeView) {
-        case 'Dashboard': return <DashboardView stats={{clients: clients.length, bookings: bookings.length}} clientData={clients} bookingData={bookings} policyData={policies} />;
+        case 'Dashboard': return <DashboardView stats={{clients: clients.length, bookings: bookings.length}} clientData={clients} bookingData={bookings} policyData={policies} globalReminders={reminders} />;
+        case 'Client Insight': return <ClientInsightView allClients={clients} allBookings={bookings} allVisas={visas} allPassports={passports} allPolicies={policies} allNotes={clientNotes} globalReminders={reminders} onUpdate={fetchData} onShowSnackbar={setSnackbar} onOpenModal={handleOpenModal} onDeleteItem={handleDeleteItem} />;
         case 'Clients': 
         case 'Bookings':
         case 'Visas':
@@ -451,7 +475,7 @@ export default function DashboardPage() {
             InputProps={{ startAdornment: (<InputAdornment position="start"><SearchIcon /></InputAdornment>) }} sx={{minWidth: '300px'}} />
         <Button variant="contained" startIcon={<AddIcon />} onClick={() => handleOpenModal('add')}>Add {view.slice(0, -1)}</Button>
       </Box>
-      <TableContainer sx={{ maxHeight: 'calc(100vh - 250px)' }}>
+      <TableContainer sx={{ maxHeight: 'calc(100vh - 280px)' }}>
         <Table stickyHeader aria-label={`${view} table`}>
           <TableHead>
             <TableRow>
@@ -475,6 +499,8 @@ export default function DashboardPage() {
                   <TableCell key={key}>
                     {key.includes('date') && item[key] ? dayjs(item[key]).format('YYYY-MM-DD') : 
                      key === 'client_id' ? (clients.find(c => c.id === item[key])?.first_name || 'N/A') :
+                     key === 'booking_id' ? (bookings.find(b => b.id === item[key])?.pnr || 'N/A') :
+                     key === 'vip_status' ? (item[key] ? 'Yes' : 'No') :
                      item[key]}
                   </TableCell>
                 ))}
@@ -496,7 +522,7 @@ export default function DashboardPage() {
   ));
   TableView.displayName = 'TableView';
 
-  const DashboardView = ({ stats, clientData, bookingData, policyData }: any) => {
+  const DashboardView = ({ stats, clientData, bookingData, policyData, globalReminders }: any) => {
     const nationalityData = useMemo(() => Object.entries(
         clientData.reduce((acc, c) => ({ ...acc, [c.nationality]: (acc[c.nationality] || 0) + 1 }), {} as Record<string, number>)
     ).map(([name, value]) => ({ name, value })), [clientData]);
@@ -568,77 +594,132 @@ export default function DashboardPage() {
         }, 0);
         return Math.round(totalDays / validTrips.length);
     }, [bookingData]);
+
+    const expiringRemindersCount = useMemo(() => {
+        return globalReminders.filter((r: Reminder) => r.type !== 'Birthday' && r.days_left! <= 30 && r.days_left! >=0).length;
+    }, [globalReminders]);
     
     return (
         <Fade in={true}>
         <Grid container spacing={3}>
-            <Grid item xs={12} sm={6} md={3}><Paper sx={{p:2, textAlign:'center', elevation: 3, borderRadius: 2}}><Typography variant="h6">Total Clients</Typography><Typography variant="h4" color="primary.main" sx={{fontWeight: 'bold'}}>{stats.clients}</Typography></Paper></Grid>
-            <Grid item xs={12} sm={6} md={3}><Paper sx={{p:2, textAlign:'center', elevation: 3, borderRadius: 2}}><Typography variant="h6">Active Bookings</Typography><Typography variant="h4" color="secondary.main" sx={{fontWeight: 'bold'}}>{stats.bookings}</Typography></Paper></Grid>
-            <Grid item xs={12} sm={6} md={3}><Paper sx={{p:2, textAlign:'center', elevation: 3, borderRadius: 2}}><Typography variant="h6">Avg. Trip Duration</Typography><Typography variant="h4" color="info.main" sx={{fontWeight: 'bold'}}>{avgTripDuration} Days</Typography></Paper></Grid>
-            <Grid item xs={12} sm={6} md={3}><Paper sx={{p:2, textAlign:'center', elevation: 3, borderRadius: 2}}><Typography variant="h6">Expiring Soon</Typography><Typography variant="h4" color="error.main" sx={{fontWeight: 'bold'}}>{reminders.filter((r: Reminder) => r.type !== 'Birthday' && r.days_left! <= 30 && r.days_left! >=0).length}</Typography></Paper></Grid>
+            {/* Key Metrics */}
+            <Grid item xs={12}>
+                <Grid container spacing={3}>
+                    <Grid item xs={12} sm={6} md={3}>
+                        <Paper sx={{p:3, textAlign:'center', elevation: 3, borderRadius: 2, height: '100%'}}>
+                            <Typography variant="h6" color="text.secondary" gutterBottom>Total Clients</Typography>
+                            <Typography variant="h4" color="primary.main" sx={{fontWeight: 'bold'}}>{stats.clients}</Typography>
+                        </Paper>
+                    </Grid>
+                    <Grid item xs={12} sm={6} md={3}>
+                        <Paper sx={{p:3, textAlign:'center', elevation: 3, borderRadius: 2, height: '100%'}}>
+                            <Typography variant="h6" color="text.secondary" gutterBottom>Active Bookings</Typography>
+                            <Typography variant="h4" color="secondary.main" sx={{fontWeight: 'bold'}}>{stats.bookings}</Typography>
+                        </Paper>
+                    </Grid>
+                    <Grid item xs={12} sm={6} md={3}>
+                        <Paper sx={{p:3, textAlign:'center', elevation: 3, borderRadius: 2, height: '100%'}}>
+                            <Typography variant="h6" color="text.secondary" gutterBottom>Avg. Trip Duration</Typography>
+                            <Typography variant="h4" color="info.main" sx={{fontWeight: 'bold'}}>{avgTripDuration} Days</Typography>
+                        </Paper>
+                    </Grid>
+                    <Grid item xs={12} sm={6} md={3}>
+                        <Paper sx={{p:3, textAlign:'center', elevation: 3, borderRadius: 2, height: '100%'}}>
+                            <Typography variant="h6" color="text.secondary" gutterBottom>Expiring Soon</Typography>
+                            <Typography variant="h4" color="error.main" sx={{fontWeight: 'bold'}}>{expiringRemindersCount}</Typography>
+                        </Paper>
+                    </Grid>
+                </Grid>
+            </Grid>
             
-            <Grid item xs={12} lg={8}><Paper sx={{p:2, height: 400, elevation: 3, borderRadius: 2}}>
-                <Typography variant="h6" gutterBottom>Bookings Over Time</Typography>
-                <ResponsiveContainer width="100%" height="90%"><LineChart data={bookingsByMonthData} margin={{top: 5, right: 20, left: 10, bottom: 5}}><CartesianGrid strokeDasharray="3 3" /><XAxis dataKey="name" /><YAxis allowDecimals={false} /><RechartsTooltip /><Legend /><Line type="monotone" dataKey="bookings" stroke="#8884d8" activeDot={{ r: 8 }} /></LineChart></ResponsiveContainer>
-            </Paper></Grid>
-            <Grid item xs={12} lg={4}><Paper sx={{ p: 2, height: 400, elevation: 3, borderRadius: 2 }}>
-                <Typography variant="h6" gutterBottom>Client Nationality</Typography>
-                <ResponsiveContainer width="100%" height="90%"><PieChart><Pie data={nationalityData} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={80} label labelLine={false}>{nationalityData.map((e, i) => <Cell key={`cell-${i}`} fill={COLORS[i % COLORS.length]} />)}</Pie><RechartsTooltip /><Legend layout="vertical" align="right" verticalAlign="middle" /></PieChart></ResponsiveContainer>
-            </Paper></Grid>
+            {/* Charts Section */}
+            <Grid item xs={12} md={6}>
+                <Paper sx={{p:3, height: 400, elevation: 3, borderRadius: 2, display: 'flex', flexDirection: 'column'}}>
+                    <Typography variant="h6" gutterBottom sx={{fontWeight: 'bold', flexShrink: 0}}>Bookings Over Time</Typography>
+                    <Box sx={{flexGrow: 1, width: '100%'}}>
+                        <ResponsiveContainer width="100%" height="100%"><LineChart data={bookingsByMonthData} margin={{top: 5, right: 30, left: 20, bottom: 5}}><CartesianGrid strokeDasharray="3 3" /><XAxis dataKey="name" /><YAxis allowDecimals={false} /><RechartsTooltip /><Legend /><Line type="monotone" dataKey="bookings" stroke="#8884d8" activeDot={{ r: 8 }} strokeWidth={2} /></LineChart></ResponsiveContainer>
+                    </Box>
+                </Paper>
+            </Grid>
+            <Grid item xs={12} md={6}>
+                <Paper sx={{ p: 3, height: 400, elevation: 3, borderRadius: 2, display: 'flex', flexDirection: 'column' }}>
+                    <Typography variant="h6" gutterBottom sx={{fontWeight: 'bold', flexShrink: 0}}>Client Nationality Distribution</Typography>
+                    <Box sx={{flexGrow: 1, width: '100%'}}>
+                        <ResponsiveContainer width="100%" height="100%"><PieChart><Pie data={nationalityData} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={90} label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`} labelLine={false}>{nationalityData.map((e, i) => <Cell key={`cell-${i}`} fill={COLORS[i % COLORS.length]} />)}</Pie><RechartsTooltip /><Legend wrapperStyle={{fontSize: '0.8rem'}} /></PieChart></ResponsiveContainer>
+                    </Box>
+                </Paper>
+            </Grid>
 
-             <Grid item xs={12} lg={8}><Paper sx={{p:2, height: 400, elevation: 3, borderRadius: 2}}>
-                <Typography variant="h6" gutterBottom>Popular Destinations</Typography>
-                <ResponsiveContainer width="100%" height="90%">
-                    <BarChart data={popularDestinations} layout="vertical" margin={{ top: 5, right: 30, left: 50, bottom: 5 }}>
-                         <CartesianGrid strokeDasharray="3 3" />
-                         <XAxis type="number" allowDecimals={false} />
-                         <YAxis type="category" dataKey="name" width={80} />
-                         <RechartsTooltip />
-                         <Legend />
-                         <Bar dataKey="Bookings" fill="#00C49F" radius={[10, 10, 0, 0]} />
-                    </BarChart>
-                </ResponsiveContainer>
-            </Paper></Grid>
-            <Grid item xs={12} lg={4}><Paper sx={{ p: 2, height: 400, elevation: 3, borderRadius: 2 }}>
-                <Typography variant="h6" gutterBottom>Booking Type</Typography>
-                <ResponsiveContainer width="100%" height="90%"><PieChart><Pie data={bookingTypeData} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={80} fill="#FF8042" label labelLine={false}>{bookingTypeData.map((e, i) => <Cell key={`cell-${i}`} fill={COLORS.slice(2)[i % COLORS.slice(2).length]} />)}</Pie><RechartsTooltip /><Legend layout="vertical" align="right" verticalAlign="middle" /></PieChart></ResponsiveContainer>
-            </Paper></Grid>
+            <Grid item xs={12} md={6}>
+                <Paper sx={{p:3, height: 400, elevation: 3, borderRadius: 2, display: 'flex', flexDirection: 'column'}}>
+                    <Typography variant="h6" gutterBottom sx={{fontWeight: 'bold', flexShrink: 0}}>Popular Destinations</Typography>
+                    <Box sx={{flexGrow: 1, width: '100%'}}>
+                        <ResponsiveContainer width="100%" height="100%">
+                            <BarChart data={popularDestinations} margin={{ top: 20, right: 30, left: 20, bottom: 5 }}>
+                                 <CartesianGrid strokeDasharray="3 3" />
+                                 <XAxis dataKey="name" angle={-15} textAnchor="end" height={60} interval={0} style={{fontSize: '0.75rem'}} />
+                                 <YAxis allowDecimals={false} label={{ value: 'Bookings', angle: -90, position: 'insideLeft' }} />
+                                 <RechartsTooltip />
+                                 <Legend />
+                                 <Bar dataKey="Bookings" fill="#00C49F" radius={[4, 4, 0, 0]} barSize={30} />
+                            </BarChart>
+                        </ResponsiveContainer>
+                    </Box>
+                </Paper>
+            </Grid>
+            <Grid item xs={12} md={6}>
+                <Paper sx={{ p: 3, height: 400, elevation: 3, borderRadius: 2, display: 'flex', flexDirection: 'column' }}>
+                    <Typography variant="h6" gutterBottom sx={{fontWeight: 'bold', flexShrink: 0}}>Booking Type Distribution</Typography>
+                    <Box sx={{flexGrow: 1, width: '100%'}}>
+                        <ResponsiveContainer width="100%" height="100%"><PieChart><Pie data={bookingTypeData} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={90} fill="#FF8042" label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`} labelLine={false}>{bookingTypeData.map((e, i) => <Cell key={`cell-${i}`} fill={COLORS.slice(2)[i % COLORS.slice(2).length]} />)}</Pie><RechartsTooltip /><Legend wrapperStyle={{fontSize: '0.8rem'}} /></PieChart></ResponsiveContainer>
+                    </Box>
+                </Paper>
+            </Grid>
 
-            <Grid item xs={12} lg={8}><Paper sx={{p:2, height: 400, elevation: 3, borderRadius: 2}}>
-                <Typography variant="h6" gutterBottom>Client Age Distribution</Typography>
-                <ResponsiveContainer width="100%" height="90%">
-                    <BarChart data={clientAgeData} margin={{top: 5, right: 20, left: 10, bottom: 5}}>
-                         <CartesianGrid strokeDasharray="3 3" />
-                         <XAxis dataKey="name" />
-                         <YAxis allowDecimals={false}/>
-                         <RechartsTooltip />
-                         <Legend />
-                         <Bar dataKey="Number of Clients" fill="#FFBB28" radius={[10, 10, 0, 0]} />
-                    </BarChart>
-                </ResponsiveContainer>
-            </Paper></Grid>
-             <Grid item xs={12} lg={4}><Paper sx={{ p: 2, height: 400, elevation: 3, borderRadius: 2 }}>
-                <Typography variant="h6" gutterBottom>Top 5 Clients (by Bookings)</Typography>
-                 <TableContainer sx={{ maxHeight: 320 }}>
-                    <Table size="small">
-                        <TableHead>
-                            <TableRow><TableCell sx={{fontWeight: 'bold'}}>Client Name</TableCell><TableCell align="right" sx={{fontWeight: 'bold'}}>Bookings</TableCell></TableRow>
-                        </TableHead>
-                        <TableBody>
-                            {topClientsByBookings.length > 0 ? (
-                                topClientsByBookings.map((client) => (
-                                    <TableRow key={client.name}>
-                                        <TableCell>{client.name}</TableCell>
-                                        <TableCell align="right">{String(client.bookings)}</TableCell>
-                                    </TableRow>
-                                ))
-                            ) : (
-                                <TableRow><TableCell colSpan={2} align="center">No top clients yet.</TableCell></TableRow>
-                            )}
-                        </TableBody>
-                    </Table>
-                </TableContainer>
-            </Paper></Grid>
+            <Grid item xs={12} md={6}>
+                <Paper sx={{p:3, height: 400, elevation: 3, borderRadius: 2, display: 'flex', flexDirection: 'column'}}>
+                    <Typography variant="h6" gutterBottom sx={{fontWeight: 'bold', flexShrink: 0}}>Client Age Distribution</Typography>
+                    <Box sx={{flexGrow: 1, width: '100%'}}>
+                        <ResponsiveContainer width="100%" height="100%">
+                            <BarChart data={clientAgeData} margin={{top: 20, right: 30, left: 20, bottom: 5}}>
+                                 <CartesianGrid strokeDasharray="3 3" />
+                                 <XAxis dataKey="name" />
+                                 <YAxis allowDecimals={false} label={{ value: 'Number of Clients', angle: -90, position: 'insideLeft' }} />
+                                 <RechartsTooltip />
+                                 <Legend />
+                                 <Bar dataKey="Number of Clients" fill="#FFBB28" radius={[4, 4, 0, 0]} barSize={30} />
+                            </BarChart>
+                        </ResponsiveContainer>
+                    </Box>
+                </Paper>
+            </Grid>
+             <Grid item xs={12} md={6}>
+                <Paper sx={{ p: 3, height: 400, elevation: 3, borderRadius: 2, display: 'flex', flexDirection: 'column' }}>
+                    <Typography variant="h6" gutterBottom sx={{fontWeight: 'bold', flexShrink: 0}}>Top 5 Clients (by Bookings)</Typography>
+                     <TableContainer sx={{ mt: 2 }}>
+                        <Table size="small" stickyHeader>
+                            <TableHead>
+                                <TableRow>
+                                    <TableCell sx={{fontWeight: 'bold', bgcolor: 'action.hover'}}>Client Name</TableCell>
+                                    <TableCell align="right" sx={{fontWeight: 'bold', bgcolor: 'action.hover'}}>Bookings</TableCell>
+                                </TableRow>
+                            </TableHead>
+                            <TableBody>
+                                {topClientsByBookings.length > 0 ? (
+                                    topClientsByBookings.map((client) => (
+                                        <TableRow key={client.name}>
+                                            <TableCell>{client.name}</TableCell>
+                                            <TableCell align="right">{String(client.bookings)}</TableCell>
+                                        </TableRow>
+                                    ))
+                                ) : (
+                                    <TableRow><TableCell colSpan={2} align="center">No top clients yet.</TableCell></TableRow>
+                                )}
+                            </TableBody>
+                        </Table>
+                    </TableContainer>
+                </Paper>
+            </Grid>
         </Grid>
         </Fade>
     );
@@ -653,7 +734,12 @@ export default function DashboardPage() {
 
     const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | { name?: string; value: unknown }>) => {
         const { name, value } = e.target as HTMLInputElement;
-        setFormData({ ...formData, [name]: (e.target as HTMLInputElement).type === 'number' ? parseFloat(value) || 0 : value });
+        // Special handling for vip_status checkbox
+        if (name === 'vip_status') {
+            setFormData({ ...formData, [name]: e.target.checked });
+        } else {
+            setFormData({ ...formData, [name]: (e.target as HTMLInputElement).type === 'number' ? parseFloat(value) || 0 : value });
+        }
     };
 
     const handleDateChange = (key: string, date: dayjs.Dayjs | null) => {
@@ -668,7 +754,7 @@ export default function DashboardPage() {
     
     return (
         <Dialog open={openModal} onClose={handleCloseModal} maxWidth="sm" fullWidth>
-            <DialogTitle>{modalMode === 'add' ? 'Add New' : 'Edit'} {activeView.slice(0, -1)}</DialogTitle>
+            <DialogTitle>{modalMode === 'add' ? 'Add New' : 'Edit'} {activeView === 'Client Insight' ? 'Client' : activeView.slice(0, -1)}</DialogTitle>
             <form onSubmit={handleSubmit}>
                 <LocalizationProvider dateAdapter={AdapterDayjs}>
                     <DialogContent dividers>
@@ -712,10 +798,37 @@ export default function DashboardPage() {
                                         onChange={(date) => handleDateChange(key, date)}
                                         slotProps={{ textField: { fullWidth: true, required: true } }}
                                     />
+                                ) : key === 'status' ? (
+                                    <FormControl fullWidth required>
+                                        <InputLabel id={`${key}-label`}>Status</InputLabel>
+                                        <Select
+                                            labelId={`${key}-label`}
+                                            id={key}
+                                            name="status"
+                                            value={formData[key] || ''}
+                                            label="Status"
+                                            onChange={(e) => handleChange(e as any)}
+                                        >
+                                            <MenuItem value="Confirmed">Confirmed</MenuItem>
+                                            <MenuItem value="Pending">Pending</MenuItem>
+                                            <MenuItem value="Cancelled">Cancelled</MenuItem>
+                                        </Select>
+                                    </FormControl>
+                                ) : key === 'vip_status' ? (
+                                    <FormControl fullWidth>
+                                        <label>
+                                            <input
+                                                type="checkbox"
+                                                name="vip_status"
+                                                checked={!!formData[key]} // Ensure it's a boolean
+                                                onChange={handleChange}
+                                            /> VIP Status
+                                        </label>
+                                    </FormControl>
                                 ) : (
                                     <TextField name={key} label={key.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase())}
                                         type={typeof (getFieldsForView(activeView) as any)[key] === 'number' ? 'number' : 'text'}
-                                        fullWidth value={formData[key] || ''} onChange={handleChange} required={key !== 'notes' && key !== 'special_requirement'}
+                                        fullWidth value={formData[key] || ''} onChange={handleChange} required={key !== 'notes' && key !== 'special_requirement' && key !== 'vip_status' && key !== 'amount' && key !== 'departure_date' && key !== 'status'}
                                         multiline={key.includes('notes') || key.includes('special_requirement')}
                                         rows={key.includes('notes') || key.includes('special_requirement') ? 3 : 1}
                                     />
@@ -946,11 +1059,6 @@ export default function DashboardPage() {
       <AppBar position="fixed" 
         sx={{ 
             zIndex: (theme) => theme.zIndex.drawer + 1,
-            // LAYOUT FIX: Removed width and margin calculations.
-            // The AppBar will now span the full width of the viewport.
-            // The drawers and main content area have their own <Toolbar /> component 
-            // to offset their content, so they will appear correctly underneath 
-            // the full-width AppBar. This simplifies the layout logic and resolves the gap issue.
         }}>
         <Toolbar>
           <IconButton color="inherit" edge="start" onClick={handleDrawerToggle} sx={{ mr: 2, display: { sm: 'none' } }}><MenuIcon /></IconButton>
@@ -968,6 +1076,7 @@ export default function DashboardPage() {
             p: 3, 
             bgcolor: '#f4f6f8', 
             minHeight: '100vh',
+            // LAYOUT FIX: Removed manual width calculations. Flex-grow will now correctly handle the width.
         }}>
         <Toolbar /> {/* Toolbar offset for content below AppBar */}
         <Container maxWidth="xl" sx={{ pt: 2, pb: 2 }}>
@@ -981,6 +1090,397 @@ export default function DashboardPage() {
       {openModal && <FormModal />}
       {docModalOpen && <DocumentUploadModal />}
       <ConfirmationDialog />
+      <Snackbar
+        open={snackbar.open}
+        autoHideDuration={6000}
+        onClose={() => setSnackbar({ ...snackbar, open: false })}
+        message={snackbar.message}
+      />
     </Box>
   );
 }
+
+// --- REUSABLE INSIGHT TABLE COMPONENT ---
+const InsightTable = ({ data, columns }: { data: any[], columns: { key: string, label: string, render?: (val: any) => React.ReactNode }[] }) => {
+    if (!data || data.length === 0) {
+        return <Typography sx={{textAlign: 'center', p: 2, color: 'text.secondary'}}>No data available.</Typography>;
+    }
+    return (
+        <TableContainer component={Paper} elevation={0} sx={{border: '1px solid #eee'}}>
+            <Table size="small">
+                <TableHead>
+                    <TableRow>
+                        {columns.map(col => <TableCell key={col.key} sx={{fontWeight: 'bold', bgcolor: 'action.hover'}}>{col.label}</TableCell>)}
+                    </TableRow>
+                </TableHead>
+                <TableBody>
+                    {data.map(item => (
+                        <TableRow hover key={item.id}>
+                            {columns.map(col => (
+                                <TableCell key={col.key}>
+                                    {col.render ? col.render(item[col.key]) : item[col.key]}
+                                </TableCell>
+                            ))}
+                        </TableRow>
+                    ))}
+                </TableBody>
+            </Table>
+        </TableContainer>
+    );
+};
+
+// --- CLIENT DOCUMENTS VIEW (FOR INSIGHT PAGE) ---
+const ClientDocumentsView = ({ client, onUpdate, onShowSnackbar }: { client: Client, onUpdate: () => void, onShowSnackbar: (state: {open: boolean, message: string}) => void }) => {
+    const [documents, setDocuments] = useState<ClientDocument[]>([]);
+    const [loading, setLoading] = useState(false);
+    const [uploading, setUploading] = useState(false);
+
+    const fetchDocuments = useCallback(async () => {
+        if (!client) return;
+        setLoading(true);
+        const { data, error } = await supabase.from('client_documents').select('*').eq('client_id', client.id).order('created_at', { ascending: false });
+        if (error) onShowSnackbar({ open: true, message: `Error fetching documents: ${error.message}` });
+        else setDocuments(data || []);
+        setLoading(false);
+    }, [client, onShowSnackbar]);
+
+    useEffect(() => {
+        fetchDocuments();
+    }, [fetchDocuments]);
+
+    const handleUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
+        if (!event.target.files || event.target.files.length === 0 || !client) return;
+        const file = event.target.files[0];
+        const filePath = `${client.id}/${Date.now()}_${file.name}`;
+        
+        setUploading(true);
+        const { error: uploadError } = await supabase.storage.from('client-documents').upload(filePath, file);
+
+        if (uploadError) {
+            onShowSnackbar({ open: true, message: `Upload failed: ${uploadError.message}` });
+        } else {
+            const { error: dbError } = await supabase.from('client_documents').insert({ client_id: client.id, file_name: file.name, file_path: filePath });
+            if (dbError) onShowSnackbar({ open: true, message: `Failed to save document record: ${dbError.message}` });
+            else { onShowSnackbar({ open: true, message: 'Document uploaded!' }); fetchDocuments(); }
+        }
+        setUploading(false);
+    };
+
+    const handleDeleteDoc = async (doc: ClientDocument) => {
+        if (!window.confirm(`Are you sure you want to delete "${doc.file_name}"?`)) return;
+        const { error: storageError } = await supabase.storage.from('client-documents').remove([doc.file_path]);
+        if (storageError) { onShowSnackbar({ open: true, message: `Storage Error: ${storageError.message}` }); return; }
+        const { error: dbError } = await supabase.from('client_documents').delete().eq('id', doc.id);
+        if (dbError) { onShowSnackbar({ open: true, message: `DB Error: ${dbError.message}` }); }
+        else { onShowSnackbar({ open: true, message: 'Document deleted!' }); fetchDocuments(); }
+    }
+
+    const handleViewOrDownload = async (doc: ClientDocument) => {
+        const { data, error } = supabase.storage.from('client-documents').getPublicUrl(doc.file_path);
+        if (error) onShowSnackbar({ open: true, message: `Error getting URL: ${error.message}` });
+        else window.open(data.publicUrl, '_blank');
+    };
+
+    if (loading) return <CircularProgress />;
+
+    return (
+        <Box>
+            <Stack direction="row" spacing={2} alignItems="center" mb={2}>
+                <Button variant="contained" component="label" startIcon={<UploadFileIcon />} disabled={uploading}>
+                    Upload File
+                    <input type="file" hidden onChange={handleUpload} />
+                </Button>
+                {uploading && <CircularProgress size={24} />}
+            </Stack>
+            <List>
+                {documents.length > 0 ? documents.map(doc => (
+                    <ListItem key={doc.id} divider secondaryAction={
+                        <>
+                            <Tooltip title="View/Download"><IconButton onClick={() => handleViewOrDownload(doc)}><VisibilityIcon color="primary" /></IconButton></Tooltip>
+                            <Tooltip title="Delete"><IconButton onClick={() => handleDeleteDoc(doc)}><DeleteIcon color="error" /></IconButton></Tooltip>
+                        </>
+                    }>
+                        <ListItemIcon><DescriptionIcon /></ListItemIcon>
+                        <ListItemText primary={doc.file_name} secondary={`Uploaded: ${dayjs(doc.created_at).format('YYYY-MM-DD')}`} />
+                    </ListItem>
+                )) : <ListItem><ListItemText primary="No documents found." sx={{color: 'text.secondary'}} /></ListItem>}
+            </List>
+        </Box>
+    );
+}
+
+// --- CLIENT INSIGHT VIEW ---
+const ClientInsightView = ({ allClients, allBookings, allVisas, allPassports, allPolicies, allNotes, globalReminders, onUpdate, onShowSnackbar, onOpenModal, onDeleteItem }: {
+    allClients: Client[], allBookings: Booking[], allVisas: Visa[], allPassports: Passport[], allPolicies: Policy[], allNotes: ClientNote[], globalReminders: Reminder[],
+    onUpdate: () => void, onShowSnackbar: (state: {open: boolean, message: string}) => void,
+    onOpenModal: (mode: 'add' | 'edit', item: unknown, overrideView?: string) => void,
+    onDeleteItem: (id: string, view: string) => void
+}) => {
+    const [insightSearchTerm, setInsightSearchTerm] = useState('');
+    const [selectedClient, setSelectedClient] = useState<Client | null>(null);
+    const [clientData, setClientData] = useState<any>({ bookings: [], visas: [], passports: [], policies: [], notes: [], reminders: [] });
+    const [tabValue, setTabValue] = useState(0);
+    const [newNote, setNewNote] = useState('');
+
+    const handleSearch = () => {
+        if (!insightSearchTerm) {
+            setSelectedClient(null);
+            return;
+        }
+        const lowercasedTerm = insightSearchTerm.toLowerCase();
+        const foundClient = allClients.find(c =>
+            c.first_name.toLowerCase().includes(lowercasedTerm) ||
+            c.last_name.toLowerCase().includes(lowercasedTerm) ||
+            c.email_id.toLowerCase().includes(lowercasedTerm) ||
+            c.mobile_no.includes(lowercasedTerm)
+        );
+        setSelectedClient(foundClient || null);
+    };
+
+    useEffect(() => {
+        if (selectedClient) {
+            setClientData({
+                bookings: allBookings.filter(b => b.client_id === selectedClient.id),
+                visas: allVisas.filter(v => v.client_id === selectedClient.id),
+                passports: allPassports.filter(p => p.client_id === selectedClient.id),
+                policies: allPolicies.filter(po => po.client_id === selectedClient.id),
+                notes: allNotes.filter(n => n.client_id === selectedClient.id),
+                reminders: globalReminders.filter(r => r.client_id === selectedClient.id)
+            });
+        } else {
+            setClientData({ bookings: [], visas: [], passports: [], policies: [], notes: [], reminders: [] });
+        }
+    }, [selectedClient, allBookings, allVisas, allPassports, allPolicies, allNotes, globalReminders]);
+
+    const handleAddNote = async () => {
+        if (!newNote.trim() || !selectedClient) return;
+        const { error } = await supabase.from('client_notes').insert({
+            client_id: selectedClient.id,
+            note: newNote,
+            user: 'Admin' // Replace with actual user later
+        });
+        if (error) {
+            onShowSnackbar({ open: true, message: `Error adding note: ${error.message}` });
+        } else {
+            onShowSnackbar({ open: true, message: 'Note added successfully!' });
+            setNewNote('');
+            onUpdate(); // Re-fetch all data
+        }
+    };
+    
+    const handleDownloadPdf = () => {
+        const insightContent = document.getElementById('insight-content');
+        if (insightContent) {
+            onShowSnackbar({ open: true, message: 'Generating PDF...' });
+            html2canvas(insightContent).then(canvas => {
+                const imgData = canvas.toDataURL('image/png');
+                const pdf = new jsPDF('p', 'mm', 'a4');
+                const pdfWidth = pdf.internal.pageSize.getWidth();
+                const canvasWidth = canvas.width;
+                const canvasHeight = canvas.height;
+                const ratio = canvasWidth / canvasHeight;
+                const width = pdfWidth;
+                const height = width / ratio;
+                pdf.addImage(imgData, 'PNG', 0, 0, width, height);
+                pdf.save(`client-insight-${selectedClient?.first_name}-${selectedClient?.last_name}.pdf`);
+            });
+        }
+    };
+
+    // Removed handleShareLink as requested
+
+    const analytics = useMemo(() => {
+        if (!selectedClient) return { totalSpend: 0, numTrips: 0, avgSpend: 0, destinations: [] };
+        const bookings = clientData.bookings;
+        const policies = clientData.policies;
+        const totalSpend = bookings.reduce((sum, b) => sum + (b.amount || 0), 0) + policies.reduce((sum, p) => sum + (p.premium_amount || 0), 0);
+        const numTrips = bookings.length;
+        const avgSpend = numTrips > 0 ? totalSpend / numTrips : 0;
+        const destinationCounts = bookings.reduce((acc, b) => {
+            if(b.destination) acc[b.destination] = (acc[b.destination] || 0) + 1;
+            return acc;
+        }, {} as Record<string, number>);
+        const destinations = Object.entries(destinationCounts).map(([name, value]) => ({name, 'Trips': value}));
+        
+        return { totalSpend, numTrips, avgSpend, destinations };
+    }, [selectedClient, clientData]);
+    
+    const getReminderIcon = (type: string) => ({ Birthday: <CakeIcon color="secondary" />, Passport: <CreditCardIcon color="error" />, Visa: <VpnKeyIcon color="error" />, Policy: <PolicyIcon color="error" />, Booking: <FlightIcon color="info" /> }[type] || <NotificationsIcon />);
+
+    const bookingCols = [ {key: 'pnr', label: 'PNR'}, {key: 'destination', label: 'Destination'}, {key: 'check_in', label: 'Check-in', render: (val: string) => dayjs(val).format('YYYY-MM-DD')}, {key: 'check_out', label: 'Check-out', render: (val: string) => dayjs(val).format('YYYY-MM-DD')}, {key: 'amount', label: 'Amount', render: (val: number) => `$${val?.toFixed(2)}`}, {key: 'status', label: 'Status'}, ];
+    const visaCols = [ {key: 'country', label: 'Country'}, {key: 'visa_type', label: 'Type'}, {key: 'visa_number', label: 'Number'}, {key: 'issue_date', label: 'Issue Date', render: (val: string) => dayjs(val).format('YYYY-MM-DD')}, {key: 'expiry_date', label: 'Expiry Date', render: (val: string) => dayjs(val).format('YYYY-MM-DD')}, ];
+    const passportCols = [ {key: 'passport_number', label: 'Number'}, {key: 'issue_date', label: 'Issue Date', render: (val: string) => dayjs(val).format('YYYY-MM-DD')}, {key: 'expiry_date', label: 'Expiry Date', render: (val: string) => dayjs(val).format('YYYY-MM-DD')}, ];
+    const policyCols = [ {key: 'policy_number', label: 'Number'}, {key: 'insurer', label: 'Insurer'}, {key: 'sum_insured', label: 'Sum Insured', render: (val: number) => `$${val?.toFixed(2)}`}, {key: 'premium_amount', label: 'Premium', render: (val: number) => `$${val?.toFixed(2)}`}, {key: 'start_date', label: 'Start', render: (val: string) => dayjs(val).format('YYYY-MM-DD')}, {key: 'end_date', label: 'End', render: (val: string) => dayjs(val).format('YYYY-MM-DD')}, ];
+
+    return (
+        <Fade in={true}>
+            <Box>
+                <Paper sx={{ p: 2, mb: 3, display: 'flex', gap: 2, alignItems: 'center', borderRadius: 2 }}>
+                    <TextField
+                        label="Search Client by Name, Email, or Phone"
+                        variant="outlined"
+                        fullWidth
+                        value={insightSearchTerm}
+                        onChange={e => setInsightSearchTerm(e.target.value)}
+                        onKeyPress={(e) => e.key === 'Enter' && handleSearch()}
+                        InputProps={{ startAdornment: (<InputAdornment position="start"><SearchIcon /></InputAdornment>) }}
+                    />
+                    <Button variant="contained" onClick={handleSearch} startIcon={<SearchIcon />} sx={{height: '56px'}}>Search</Button>
+                </Paper>
+
+                {!selectedClient && (
+                    <Paper sx={{p: 4, textAlign: 'center', borderRadius: 2}}>
+                        <AccountBoxIcon sx={{fontSize: 60, color: 'text.secondary', mb: 2}} />
+                        <Typography variant="h6" color="text.secondary">Search for a client to see their insights.</Typography>
+                    </Paper>
+                )}
+
+                {selectedClient && (
+                    <Box id="insight-content">
+                        <Grid container spacing={3}>
+                            {/* Client Summary Card */}
+                            <Grid item xs={12}>
+                                <Paper sx={{ p: 3, display: 'flex', alignItems: 'center', gap: 3, borderRadius: 2 }}>
+                                    <Avatar sx={{ width: 90, height: 90, bgcolor: 'primary.main', fontSize: '2.5rem' }}>{selectedClient.first_name[0]}</Avatar>
+                                    <Box flexGrow={1}>
+                                        <Typography variant="h4" component="div" sx={{fontWeight: 'bold', mb: 0.5}}>
+                                            {selectedClient.first_name} {selectedClient.last_name}
+                                            {selectedClient.vip_status && <Chip icon={<StarIcon />} label="VIP Client" color="secondary" size="medium" sx={{ ml: 2, verticalAlign: 'middle' }} />}
+                                        </Typography>
+                                        <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} alignItems="flex-start">
+                                            <Chip icon={<EmailIcon fontSize="small" />} label={selectedClient.email_id} size="small" />
+                                            <Chip icon={<PhoneIcon fontSize="small" />} label={selectedClient.mobile_no} size="small" />
+                                            <Chip icon={<CakeIcon fontSize="small" />} label={`DOB: ${dayjs(selectedClient.dob).format('YYYY-MM-DD')}`} size="small" />
+                                            <Chip label={`Nationality: ${selectedClient.nationality}`} size="small" />
+                                        </Stack>
+                                    </Box>
+                                    <Stack direction="row" spacing={1} sx={{alignSelf: 'flex-start'}}>
+                                        <Tooltip title="Edit Client Details">
+                                            <Button variant="outlined" startIcon={<EditIcon />} onClick={() => onOpenModal('edit', selectedClient, 'Clients')}>Edit</Button>
+                                        </Tooltip>
+                                        <Tooltip title="Delete Client">
+                                            <Button variant="outlined" color="error" startIcon={<DeleteIcon />} onClick={() => onDeleteItem(selectedClient.id, 'Clients')}>Delete</Button>
+                                        </Tooltip>
+                                        <Tooltip title="Download Client Report (PDF)">
+                                            <Button variant="contained" startIcon={<DownloadIcon />} onClick={handleDownloadPdf}>PDF Report</Button>
+                                        </Tooltip>
+                                    </Stack>
+                                </Paper>
+                            </Grid>
+                            
+                            {/* Analytics Section */}
+                            <Grid item xs={12} md={6}>
+                                <Paper sx={{ p: 3, height: '100%', borderRadius: 2 }}>
+                                    <Typography variant="h6" gutterBottom sx={{ fontWeight: 'bold' }}>Client Analytics</Typography>
+                                    <Stack spacing={2} sx={{ mt: 2 }}>
+                                        <Box display="flex" justifyContent="space-between" alignItems="center">
+                                            <Typography variant="body1">Total Bookings:</Typography>
+                                            <Typography variant="h6" color="primary.main">{analytics.numTrips}</Typography>
+                                        </Box>
+                                        <Box display="flex" justifyContent="space-between" alignItems="center">
+                                            <Typography variant="body1">Total Spend:</Typography>
+                                            <Typography variant="h6" color="primary.main">${analytics.totalSpend.toFixed(2)}</Typography>
+                                        </Box>
+                                        <Box display="flex" justifyContent="space-between" alignItems="center">
+                                            <Typography variant="body1">Average Spend per Trip:</Typography>
+                                            <Typography variant="h6" color="primary.main">${analytics.avgSpend.toFixed(2)}</Typography>
+                                        </Box>
+                                    </Stack>
+                                    <Box sx={{mt: 3, height: 200}}>
+                                        <Typography variant="subtitle1" gutterBottom sx={{ fontWeight: 'bold' }}>Top Destinations</Typography>
+                                        <ResponsiveContainer width="100%" height="90%">
+                                            <BarChart data={analytics.destinations} layout="vertical" margin={{ left: 50, right: 10 }}>
+                                                <YAxis type="category" dataKey="name" width={80} style={{fontSize: '0.8rem'}} />
+                                                <XAxis type="number" allowDecimals={false} />
+                                                <RechartsTooltip />
+                                                <Bar dataKey="Trips" fill="#82ca9d" radius={[4, 4, 0, 0]} barSize={20} />
+                                            </BarChart>
+                                        </ResponsiveContainer>
+                                    </Box>
+                                </Paper>
+                            </Grid>
+
+                            {/* Reminders Section */}
+                            <Grid item xs={12} md={6}>
+                                <Paper sx={{ p: 3, height: '100%', borderRadius: 2 }}>
+                                    <Typography variant="h6" gutterBottom sx={{ fontWeight: 'bold' }}>Client Reminders</Typography>
+                                    <List>
+                                        {clientData.reminders.length > 0 ? (
+                                            clientData.reminders.map((r: Reminder, index: number) => (
+                                                <ListItem key={index} divider sx={{ alignItems: 'flex-start' }}>
+                                                    <ListItemIcon sx={{ minWidth: '40px', mt: 0.5 }}>{getReminderIcon(r.type)}</ListItemIcon>
+                                                    <ListItemText
+                                                        primary={<Typography variant="body1" sx={{fontWeight: 'medium'}}>{r.type} for {r.name}</Typography>}
+                                                        secondary={
+                                                            <>
+                                                                {r.type.includes('Passport') || r.type.includes('Visa') || r.type.includes('Policy') ? 
+                                                                    `Expires: ${dayjs(r.expiry_date || r.end_date).format('YYYY-MM-DD')}` : ''}
+                                                                {r.type === 'Booking' ? `Departure: ${dayjs(r.departure_date).format('YYYY-MM-DD')}` : ''}
+                                                                {r.type === 'Birthday' ? `Birthday: ${dayjs(r.dob).format('MM-DD')}` : ''}
+                                                                {r.days_left !== undefined && r.days_left >= 0 && 
+                                                                    <Typography component="span" variant="body2" sx={{ display: 'block' }} color={r.days_left <= 7 ? "error.main" : "warning.main"}>
+                                                                        {r.days_left === 0 ? 'Due Today' : `In ${r.days_left} days`}
+                                                                    </Typography>
+                                                                }
+                                                                {r.days_left !== undefined && r.days_left < 0 && 
+                                                                    <Typography component="span" variant="body2" sx={{ display: 'block' }} color="error.main">
+                                                                        Expired {Math.abs(r.days_left)} days ago
+                                                                    </Typography>
+                                                                }
+                                                            </>
+                                                        }
+                                                    />
+                                                </ListItem>
+                                            ))
+                                        ) : (
+                                            <ListItem><ListItemText primary="No specific reminders for this client." sx={{color: 'text.secondary'}} /></ListItem>
+                                        )}
+                                    </List>
+                                </Paper>
+                            </Grid>
+
+
+                            {/* Main Details Tabs */}
+                            <Grid item xs={12}>
+                                <Paper sx={{ mt: 0, p: 2, borderRadius: 2 }}>
+                                    <Tabs value={tabValue} onChange={(e, val) => setTabValue(val)} indicatorColor="primary" textColor="primary" variant="scrollable" scrollButtons="auto" allowScrollButtonsMobile sx={{borderBottom: 1, borderColor: 'divider'}}>
+                                        <Tab label={`Bookings (${clientData.bookings.length})`} />
+                                        <Tab label={`Visas (${clientData.visas.length})`} />
+                                        <Tab label={`Passports (${clientData.passports.length})`} />
+                                        <Tab label={`Policies (${clientData.policies.length})`} />
+                                        <Tab label="Documents" />
+                                        <Tab label={`Notes (${clientData.notes.length})`} />
+                                    </Tabs>
+                                    <Box sx={{pt: 2}}> {/* Removed extra padding around content inside tabs */}
+                                        {tabValue === 0 && <InsightTable data={clientData.bookings} columns={bookingCols} />}
+                                        {tabValue === 1 && <InsightTable data={clientData.visas} columns={visaCols} />}
+                                        {tabValue === 2 && <InsightTable data={clientData.passports} columns={passportCols} />}
+                                        {tabValue === 3 && <InsightTable data={clientData.policies} columns={policyCols} />}
+                                        {tabValue === 4 && <ClientDocumentsView client={selectedClient} onUpdate={onUpdate} onShowSnackbar={onShowSnackbar} />}
+                                        {tabValue === 5 && (
+                                            <Box>
+                                                <List sx={{ maxHeight: 300, overflowY: 'auto', border: '1px solid #eee', borderRadius: 1, mb: 2 }}>
+                                                    {clientData.notes.length > 0 ? (
+                                                        clientData.notes.map((note: ClientNote) => (
+                                                            <ListItem key={note.id} divider>
+                                                                <ListItemText primary={note.note} secondary={`By ${note.user} on ${dayjs(note.created_at).format('YYYY-MM-DD HH:mm')}`} />
+                                                            </ListItem>
+                                                        ))
+                                                    ) : (
+                                                        <ListItem><ListItemText primary="No notes for this client." sx={{color: 'text.secondary'}} /></ListItem>
+                                                    )}
+                                                </List>
+                                                <TextField label="Add a new note" fullWidth multiline rows={3} value={newNote} onChange={e => setNewNote(e.target.value)} sx={{mt: 0}} variant="outlined" />
+                                                <Button variant="contained" onClick={handleAddNote} sx={{mt: 2}}>Add Note</Button>
+                                            </Box>
+                                        )}
+                                    </Box>
+                                </Paper>
+                            </Grid>
+                        </Grid>
+                    </Box>
+                )}
+            </Box>
+        </Fade>
+    );
+};
